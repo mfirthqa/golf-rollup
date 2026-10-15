@@ -35,7 +35,8 @@ function newEvent() {
   const ev = {
     id: uid(), name: 'Roll-up', date: today(), courseId: last?.courseId || S.courses[0]?.id || null, teeId: last?.teeId || null,
     allowance: last?.allowance ?? 95, entryFee: last?.entryFee ?? 5, twosFee: last?.twosFee ?? 0,
-    places: last?.places || [50, 30, 20], unit: last?.unit ?? 1, ties: last?.ties || 'countback',
+    placeMode: last?.placeMode || 'percent', places: last?.places || [50, 30, 20], fixed: last?.fixed || [30, 20, 10],
+    unit: last?.unit ?? 1, ties: last?.ties || 'countback',
     groupSize: last?.groupSize || 4, drawMode: last?.drawMode || 'random', startTime: '', interval: 10,
     scoreMode: last?.scoreMode || 'totals', entrants: [], groups: [], scores: {}, sidePrizes: [],
   };
@@ -82,7 +83,8 @@ function compute(ev) {
   const mainPot = num(ev.entryFee) * n;
   const sideTotal = ev.sidePrizes.reduce((a, s) => a + num(s.amount), 0);
   const placePot = Math.max(0, mainPot - sideTotal);
-  const placeMoney = C.placePayouts(ranked, placePot, ev.places, num(ev.unit, 1));
+  const plan = prizePlan(ev, placePot);
+  const placeMoney = C.placePayoutsFromAmounts(ranked, plan.amounts);
   const twosPot = num(ev.twosFee) * n;
   const tw = C.twosPayouts(new Map(scored.map((r) => [r.id, r.twos])), twosPot);
   const winnings = new Map();
@@ -90,7 +92,25 @@ function compute(ev) {
   for (const [id, a] of placeMoney) add(id, a);
   for (const [id, a] of tw.out) add(id, a);
   for (const s of ev.sidePrizes) add(s.winner, num(s.amount));
-  return { tee, holesOk, rows, ranked, mainPot, sideTotal, placePot, placeMoney, twosPot, tw, winnings, allIn: n > 0 && scored.length === n };
+  return { tee, holesOk, rows, ranked, mainPot, sideTotal, placePot, plan, placeMoney, twosPot, tw, winnings, allIn: n > 0 && scored.length === n };
+}
+
+/**
+ * The money for 1st, 2nd, 3rd... before anyone has a score:
+ * percentages of the pot, fixed amounts, or auto (more places for bigger fields).
+ */
+function prizePlan(ev, placePot) {
+  const n = ev.entrants.length;
+  const mode = ev.placeMode || 'percent';
+  if (mode === 'fixed') {
+    const amounts = (ev.fixed || []).map((x) => num(x));
+    const total = amounts.reduce((a, b) => a + b, 0);
+    return { mode, amounts, pct: null, total, left: +(placePot - total).toFixed(2) };
+  }
+  const pct = mode === 'auto' ? C.autoPlaces(n) : (ev.places || []).filter((x) => x > 0);
+  const k = Math.max(1, Math.min(pct.length, n || pct.length));
+  const amounts = C.splitAmount(placePot, pct.slice(0, k), num(ev.unit, 1));
+  return { mode, amounts, pct, total: placePot, left: 0 };
 }
 
 // ── Router ──────────────────────────────────────────────────────────────────
@@ -243,9 +263,7 @@ function evSetup(ev) {
   <div class="card">
     <h2>Money</h2>
     <div class="row"><div>${evField(ev, 'entryFee', `Entry (${cur()})`, 'inputmode="decimal"')}</div><div>${evField(ev, 'twosFee', `2s pot entry (${cur()}, 0 = none)`, 'inputmode="decimal"')}</div></div>
-    <label>Prize split % for 1st, 2nd, 3rd… (comma separated)</label>
-    <input data-k="ev.places" data-ev="${ev.id}" data-f="places" value="${esc(ev.places.join(', '))}">
-    ${evSelect(ev, 'unit', 'Round prizes to', [[1, `Whole ${cur() === 'GBP' ? 'pounds' : 'units'}`], [0.5, '50p / 0.50'], [0.01, 'Exact']])}
+    ${prizesEditor(ev)}
     <h2 class="mt">Side prizes <span class="muted">(taken from the main pot)</span></h2>
     ${ev.sidePrizes.map((s, i) => `<div class="row"><input data-k="sp.${i}.n" data-side="${ev.id}:${i}:name" value="${esc(s.name)}" placeholder="e.g. Nearest the pin">
       <input style="flex:0 0 90px" inputmode="decimal" data-k="sp.${i}.a" data-side="${ev.id}:${i}:amount" value="${esc(s.amount)}" placeholder="${cur()}">
@@ -254,6 +272,40 @@ function evSetup(ev) {
   </div>
   <a class="btn" style="width:100%" href="#/event/${ev.id}/players">Next: players →</a>
   <button class="danger mt" style="width:100%" data-act="del-event" data-id="${ev.id}">Delete this roll-up</button>`;
+}
+
+function prizesEditor(ev) {
+  const r = compute(ev);
+  const plan = r.plan;
+  const mode = ev.placeMode || 'percent';
+  const n = ev.entrants.length;
+  const presets = [['100', 'Winner takes all'], ['60,40', '60 / 40'], ['50,30,20', '50 / 30 / 20'], ['40,30,20,10', '40 / 30 / 20 / 10']];
+  let rows = '';
+  if (mode === 'percent') {
+    rows = ev.places.map((p, i) => `<div class="row"><span style="flex:0 0 44px"><b>${C.ordinal(i + 1)}</b></span>
+      <input inputmode="decimal" data-k="pl.${i}" data-place="${ev.id}:${i}" value="${esc(p)}" aria-label="${C.ordinal(i + 1)} %"><span style="flex:0 0 20px">%</span>
+      <span style="flex:0 0 64px;text-align:right" class="muted">${n ? m(plan.amounts[i] ?? 0) : ''}</span>
+      <button class="small danger" style="flex:0 0 auto" data-act="del-place" data-id="${ev.id}:${i}" ${ev.places.length < 2 ? 'disabled' : ''}>✕</button></div>`).join('');
+    const sum = ev.places.reduce((a, b) => a + num(b), 0);
+    rows += `<div class="row mt"><button class="small secondary" style="flex:0 0 auto" data-act="add-place" data-id="${ev.id}">+ Add a place</button>
+      <span class="muted" style="text-align:right">${sum === 100 ? 'Adds up to 100%' : `Adds up to ${sum}%; shares are scaled to the whole pot`}</span></div>
+      <div class="row mt" style="flex-wrap:wrap">${presets.map(([v, l]) => `<button class="small secondary" style="flex:0 0 auto" data-act="preset" data-id="${ev.id}" data-preset="${v}">${l}</button>`).join('')}</div>`;
+  } else if (mode === 'fixed') {
+    rows = (ev.fixed || []).map((a, i) => `<div class="row"><span style="flex:0 0 44px"><b>${C.ordinal(i + 1)}</b></span>
+      <input inputmode="decimal" data-k="fx.${i}" data-fixed="${ev.id}:${i}" value="${esc(a)}" aria-label="${C.ordinal(i + 1)} prize">
+      <button class="small danger" style="flex:0 0 auto" data-act="del-fixed" data-id="${ev.id}:${i}" ${(ev.fixed || []).length < 2 ? 'disabled' : ''}>✕</button></div>`).join('');
+    rows += `<button class="small secondary mt" data-act="add-fixed" data-id="${ev.id}">+ Add a place</button>
+      <p class="muted">Prizes ${m(plan.total)} of a ${m(r.placePot)} pot${n ? '' : ' (pot grows as players are added)'}.</p>
+      ${n && plan.left < 0 ? `<div class="warn">Prizes are ${m(-plan.left)} more than the pot.</div>` : ''}
+      ${n && plan.left > 0 ? `<p class="muted">${m(plan.left)} left over (e.g. carry it to next time).</p>` : ''}`;
+  } else {
+    rows = `<p class="muted">Pays more places as more people play (about one place per 4 players, up to 6).</p>
+      <p>${n ? plan.pct.slice(0, plan.amounts.length).map((p, i) => `${C.ordinal(i + 1)} ${p}% (${m(plan.amounts[i])})`).join(' · ') : 'Add players to see the split.'}</p>`;
+  }
+  return `
+    ${evSelect(ev, 'placeMode', 'Prizes', [['percent', 'Percentage of the pot'], ['fixed', `Fixed amounts (${cur()})`], ['auto', 'Auto: by number of players']])}
+    <div class="mt">${rows}</div>
+    ${mode !== 'fixed' ? evSelect(ev, 'unit', 'Round prizes to', [[1, `Whole ${cur() === 'GBP' ? 'pounds' : 'units'}`], [0.5, '50p / 0.50'], [0.01, 'Exact']]) : ''}`;
 }
 
 function evPlayers(ev) {
@@ -377,6 +429,7 @@ function evResults(ev) {
   <div class="card">
     <h2>The money</h2>
     <p>Main pot: <b>${m(r.mainPot)}</b> (${ev.entrants.length} × ${m(ev.entryFee)})${r.sideTotal ? ` · side prizes ${m(r.sideTotal)} · places ${m(r.placePot)}` : ''}</p>
+    <p class="muted">Prizes: ${r.plan.amounts.map((a, i) => `${C.ordinal(i + 1)} ${m(a)}`).join(' · ') || 'none'}${r.plan.mode === 'fixed' && r.plan.left ? ` · ${r.plan.left > 0 ? `${m(r.plan.left)} left over` : `${m(-r.plan.left)} short`}` : ''}</p>
     ${r.twosPot ? `<p>2s pot: <b>${m(r.twosPot)}</b> · ${r.tw.shares} two${r.tw.shares === 1 ? '' : 's'}${r.tw.rollover ? ` · <b>${m(r.tw.rollover)} rolls over</b>` : ''}</p>` : ''}
     ${ev.sidePrizes.length ? ev.sidePrizes.map((s, i) => `<label>${esc(s.name || 'Side prize')} (${m(s.amount)}) won by</label>
       <select data-sidewin="${ev.id}:${i}"><option value="">Not decided</option>${r.rows.map((x) => `<option value="${x.id}" ${s.winner === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`).join('') : ''}
@@ -413,6 +466,11 @@ app.addEventListener('click', async (e) => {
   if (act === 'del-course' && confirm('Delete this course?')) { S.courses = S.courses.filter((x) => x.id !== a); save(); location.hash = '#/courses'; return; }
   if (act === 'add-tee') { course(a).tees.push(newTee('White')); }
   if (act === 'del-tee') { const c = course(a); if (c.tees.length > 1) c.tees = c.tees.filter((t) => t.id !== b2); }
+  if (act === 'add-place') event(a).places.push(10);
+  if (act === 'del-place') { const ev = event(a); if (ev.places.length > 1) ev.places.splice(Number(b2), 1); }
+  if (act === 'add-fixed') { const ev = event(a); ev.fixed = ev.fixed || []; ev.fixed.push(5); }
+  if (act === 'del-fixed') { const ev = event(a); if (ev.fixed.length > 1) ev.fixed.splice(Number(b2), 1); }
+  if (act === 'preset') { const ev = event(a); ev.placeMode = 'percent'; ev.places = b.dataset.preset.split(',').map(Number); }
   if (act === 'add-side') event(a).sidePrizes.push({ name: 'Nearest the pin', amount: 5, winner: '' });
   if (act === 'del-side') event(a).sidePrizes.splice(Number(b2), 1);
   if (act === 'add-player') addEntrant(event(a), player(b2));
@@ -450,7 +508,10 @@ app.addEventListener('input', (e) => {
     if (d.f === 'places') ev.places = t.value.split(/[ ,/]+/).map(Number).filter((x) => x > 0);
     else if (d.f === 'courseId') { ev.courseId = t.value || null; ev.teeId = course(t.value)?.tees[0]?.id || null; }
     else ev[d.f] = t.tagName === 'SELECT' && ['groupSize', 'unit'].includes(d.f) ? Number(t.value) : t.value;
-  } else if (d.side) { const [id, i, f] = d.side.split(':'); event(id).sidePrizes[Number(i)][f] = t.value; }
+    if (d.f === 'placeMode' && t.value === 'fixed' && !ev.fixed?.length) ev.fixed = [30, 20, 10];
+  } else if (d.place) { const [id, i] = d.place.split(':'); event(id).places[Number(i)] = t.value === '' ? '' : num(t.value); }
+  else if (d.fixed) { const [id, i] = d.fixed.split(':'); event(id).fixed[Number(i)] = t.value === '' ? '' : num(t.value); }
+  else if (d.side) { const [id, i, f] = d.side.split(':'); event(id).sidePrizes[Number(i)][f] = t.value; }
   else if (d.sidewin) { const [id, i] = d.sidewin.split(':'); event(id).sidePrizes[Number(i)].winner = t.value; }
   else if (d.entrant) {
     const [id, pid] = d.entrant.split(':');

@@ -1,6 +1,6 @@
 // Offline support: golf courses often have no signal. Cache the app's files
 // and serve them from the cache first; refresh the cache in the background.
-const CACHE = 'rollup-v1';
+const CACHE = 'rollup-v2';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'calc.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

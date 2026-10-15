@@ -113,6 +113,23 @@ export function splitAmount(total, percents, unit = 1) {
 }
 
 /**
+ * "Auto" prize split: more places are paid as the field grows
+ * (about one place per four players, up to six).
+ */
+export function autoPlaces(players) {
+  const tables = {
+    1: [100], 2: [60, 40], 3: [50, 30, 20], 4: [40, 30, 20, 10],
+    5: [35, 25, 20, 12, 8], 6: [30, 22, 17, 13, 10, 8],
+  };
+  return tables[Math.min(6, Math.max(1, Math.floor(players / 4)))];
+}
+
+export function ordinal(n) {
+  const s = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th');
+  return `${n}${s}`;
+}
+
+/**
  * Prize money for ranked players.
  * places: percentages for 1st, 2nd, 3rd... ; ranked: output of rank().
  * Tied players (same tieGroup) share the combined money of the places they span.
@@ -120,7 +137,13 @@ export function splitAmount(total, percents, unit = 1) {
  */
 export function placePayouts(ranked, pot, places, unit = 1) {
   const n = Math.min(places.length, ranked.length);
-  const amounts = splitAmount(pot, places.slice(0, n), unit);
+  return placePayoutsFromAmounts(ranked, splitAmount(pot, places.slice(0, n), unit));
+}
+
+/** Prize money from fixed amounts for 1st, 2nd, 3rd... (ties share the places they span). */
+export function placePayoutsFromAmounts(ranked, placeAmounts) {
+  const n = Math.min(placeAmounts.length, ranked.length);
+  const amounts = placeAmounts.slice(0, n).map((a) => Number(a) || 0);
   const out = new Map();
   let i = 0;
   while (i < ranked.length && i < n) {
